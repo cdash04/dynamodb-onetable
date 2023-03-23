@@ -7,12 +7,17 @@ assignees: ''
 
 ---
 
-**ISSUES will not receive priority that do not follow this template or cannot be easily reproduced or diagnosed**
+**ISSUES will not receive priority that do not complete this template. They will be flagged as "Insufficient Information" and may be closed without any action.**
 
 **Describe the bug**
+
 A clear and complete description of what the bug is. Please explain in detail what the bug is. Most people are too brief in the description and it results in delays addressing issues as we go back and forth with questions. Please spend some time writing a complete description.
 
+Please don't just paste an issue with this template not completed with all required information.
+
 **To Reproduce**
+
+Include a link to a gist or repository containing a debug.ts that reproduces your issue. Reproductions must be short, correct, self-contained and must not contain code that isn't relevant to the issue. Please do NOT just paste code from your project. Explaining how to reproduce is most often insufficient. It may be clear to you, but typically is less than clear to others. Furthermore, it puts the burden of creating a test case onto the volunteer maintainers and isn't scalable. If such a reproduction is not provided, the issue may be closed without comment.
 
 Steps to reproduce the behavior:
 
@@ -20,7 +25,7 @@ Steps to reproduce the behavior:
 2. Edit your reproducible, MINIMAL, stand-alone test case into the test/debug.ts file.
 3. Run via `jest debug` or run VS code in the top level directory.
 
-If you don't edit debug.ts and provide snippets of code, then your issue may not receive priority.
+If you don't provide a complete debug.ts that demonstrates your issue, then your issue will not receive priority and may be closed without comment.
 
 Ensure that your debug.ts includes:
 
@@ -32,6 +37,7 @@ Ensure that your debug.ts includes:
 Check that:
 
 1. You are using a current version of Node and NPM
+2. The debug.ts actually executes using 'jest debug'
 
 **Cut/Paste**
 

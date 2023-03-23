@@ -9,15 +9,16 @@ import {ValidationSchema} from './schemas'
 const table = new Table({
     name: 'ValidateTestTable',
     client: Client,
+    partial: false,
     schema: ValidationSchema,
     logger: false,
 })
 
-let User = null
+let User
 let user: any
 let users: any[]
 
-test('Create Table', async() => {
+test('Create Table', async () => {
     if (!(await table.exists())) {
         await table.createTable()
         expect(await table.exists()).toBe(true)
@@ -26,7 +27,7 @@ test('Create Table', async() => {
 })
 
 test('Get Schema', () => {
-    let schema:any = table.getCurrentSchema()
+    let schema: any = table.getCurrentSchema()
     expect(schema.models).toBeDefined()
     expect(schema.indexes).toBeDefined()
     expect(schema.params).toBeDefined()
@@ -34,9 +35,9 @@ test('Get Schema', () => {
     expect(schema.models.User.pk).toBeDefined()
 })
 
-test('Create valid', async() => {
+test('Create valid', async () => {
     let params = {
-        name: 'Peter O\'Flanagan',
+        name: "Peter O'Flanagan",
         email: 'peter@example.com',
         address: '444 Cherry Tree Lane',
         city: 'San Francisco',
@@ -48,14 +49,14 @@ test('Create valid', async() => {
     expect(user).toMatchObject(params)
 })
 
-test('Update without updating required properties', async() => {
+test('Update without updating required properties', async () => {
     user = await User.update({id: user.id, age: 42})
     expect(user.age).toBe(42)
 })
 
-test('Create invalid', async() => {
+test('Create invalid', async () => {
     let params = {
-        name: 'Peter@O\'Flanagan',
+        name: "Peter@O'Flanagan",
         email: 'peter example.com',
         address: '444 Cherry Tree Lane[]',
         city: 'New York',
@@ -83,7 +84,7 @@ test('Create invalid', async() => {
     }
 })
 
-test('Create missing required property', async() => {
+test('Create missing required property', async () => {
     let params = {
         name: 'Jenny Smith',
         //  Missing email
@@ -106,7 +107,7 @@ test('Create missing required property', async() => {
     }
 })
 
-test('Remove required property', async() => {
+test('Remove required property', async () => {
     try {
         await User.update({id: user.id, email: null})
     } catch (err) {

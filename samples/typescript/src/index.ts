@@ -5,7 +5,7 @@
  */
 import DynamoDbLocal from 'dynamo-db-local'
 
-import { DynamoDBClient } from '@aws-sdk/client-dynamodb'
+import {DynamoDBClient} from '@aws-sdk/client-dynamodb'
 
 //  For AWS V3
 // import Dynamo from 'dynamodb-onetable/Dynamo'
@@ -13,9 +13,9 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb'
 
 //  To debug locally
 import Dynamo from '../../../dist/mjs/Dynamo.js'
-import { Entity, OneSchema, OneTableArgError, OneTableError, Table} from '../../../dist/mjs/index.js'
+import {Entity, Table} from '../../../src/index.js'
 
-import Schema from './schema.js'
+import Schema from './schema'
 
 //  Local DynamoDB connection port
 const PORT = 4567
@@ -25,15 +25,15 @@ const client = new Dynamo({
     client: new DynamoDBClient({
         region: 'local',
         endpoint: `http://localhost:${PORT}`,
-    })
+    }),
 })
 
 //  Crypto setup for to add additional encryption layer of email addresses
 const Crypto = {
-    "primary": {
-        "cipher": "aes-256-gcm",
-        "password": "1a22a-d27c9-12342-5f7bc-1a716-fc73e"
-    }
+    primary: {
+        cipher: 'aes-256-gcm',
+        password: '1a22a-d27c9-12342-5f7bc-1a716-fc73e',
+    },
 }
 
 /*
@@ -76,10 +76,10 @@ async function test() {
     /*
         Create typed models. We can also access items using the table APIs. E.g. table.get('User', ...)
     */
-    const Account = table.getModel<AccountType>('Account')
-    const Invoice = table.getModel<InvoiceType>('Invoice')
-    const Product = table.getModel<ProductType>('Product')
-    const User = table.getModel<UserType>('User')
+    const Account = table.getModel('Account')
+    const Invoice = table.getModel('Invoice')
+    const Product = table.getModel('Product')
+    const User = table.getModel('User')
 
     /*
         Create account. This will allocate an account ID (ULID) and create item in primary and
@@ -93,9 +93,9 @@ async function test() {
     table.setContext({accountId: account.id})
 
     /*
-        Create user. This will allocate a user ID, get the accountId from the context.
+        Create user. This will allocate a user ID and get the accountId from the context.
      */
-    let user = await User.create({name: 'Road Runner', email: 'roadrunner@acme.com', address: {}})
+    let user = await User.create({name: 'Road Runner', email: 'roadrunner@acme.com'})
 
     user = await User.get({email: 'roadrunner@acme.com'})
 
@@ -117,22 +117,26 @@ async function test() {
     user = await User.update({email: 'roadrunner@acme.com'}, {set: {'address.zip': '{"98034"}'}})
 
     /*
-        Different ways to update properties. Add will atomically add 10 to the balance as will the `set` expression.
+        Different ways to update properties. Add will automically add 10 to the balance as will the `set` expression.
     */
     user = await User.update({email: 'roadrunner@acme.com', balance: 110})
     user = await User.update({email: 'roadrunner@acme.com'}, {add: {balance: 10}})
     user = await User.update({email: 'roadrunner@acme.com'}, {set: {balance: '${balance} - {2}'}})
 
     //  Find users with a balance over $100
-    users = await User.find({accountId: account.id}, {
-        where: '${balance} > {100}'
-    })
+    users = await User.find(
+        {accountId: account.id},
+        {
+            where: '${balance} > {100}',
+        }
+    )
 
     /*
         Create many users via batch
      */
     let batch = {}
-    let i = 0, count = 0
+    let i = 0,
+        count = 0
     while (i++ < 200) {
         User.create({name: `user${i}`, email: `user${i}@acme.com`}, {batch})
         if (++count >= 25) {
@@ -145,7 +149,7 @@ async function test() {
     /*
         Get a list of user email addresses. Need _type to know how to parse results.
     */
-    let items = (await User.find({}, {fields: ['email', '_type']})).map(i => i.email)
+    let items = (await User.find({}, {fields: ['email', '_type']})).map((i) => i.email)
 
     /*
         Read a page of users in groups of 25 at a time
@@ -159,7 +163,7 @@ async function test() {
     /*
         Create a product, not tied to an account.
     */
-    let product = await Product.create({name: 'rocket', price: 10.99 })
+    let product = await Product.create({name: 'rocket', price: 10.99})
 
     /*
         Transaction to atomically create an invoice and update the user and account balance
@@ -181,16 +185,19 @@ async function test() {
     */
     let from = new Date()
     from.setMonth(from.getMonth() - 1)
-    let invoices = await Invoice.find({
+    let invoices = await Invoice.find(
+        {
             gs1sk: {between: [`invoice#${from.toISOString()}`, `invoice#${new Date().toISOString()}`]},
-        }, {
+        },
+        {
             index: 'gs1',
             follow: true,
-        })
+        }
+    )
     /*
         For maintenance, useful to be able to query by entity type. This is not a costly scan.
     */
-    let accounts = await Account.find({}, {index: 'gs1'})
+    let accounts = await Account.find({}, {index: 'gs1', follow: true})
     users = await User.find({}, {index: 'gs1'})
     invoices = await Invoice.find({}, {index: 'gs1'})
 
@@ -202,7 +209,7 @@ async function test() {
 
 //  Short nap
 async function delay(time: number) {
-    return new Promise(function(resolve, reject) {
+    return new Promise(function (resolve, reject) {
         setTimeout(() => resolve(true), time)
     })
 }

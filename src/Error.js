@@ -18,7 +18,7 @@ function init(self, message, context) {
     if (typeof Error.captureStackTrace === 'function') {
         Error.captureStackTrace(self, self.constructor)
     } else {
-        self.stack = (new Error(message)).stack
+        self.stack = new Error(message).stack
     }
 }
 
@@ -34,7 +34,20 @@ export class OneTableError extends Error {
             buf.push(`code: ${this.code}`)
         }
         if (this.context) {
-            buf.push(`context: ${JSON.stringify(this.context, null, 4)}`)
+            try {
+                buf.push(`context: ${JSON.stringify(this.context, null, 4)}`)
+            } catch (err) {
+                //  Incase context has loops in some objects. Try to handle the properties that don't have loops.
+                buf.push('{')
+                for (let [key, value] of Object.entries(this.context)) {
+                    try {
+                        buf.push(`    ${key}: ${JSON.stringify(value, null, 4)}`)
+                    } catch (err) {
+                        //  No action
+                    }
+                }
+                buf.push('}')
+            }
         }
         return buf.join('\n')
     }

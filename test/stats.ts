@@ -11,13 +11,14 @@ const MaxUsers = 100
 const table = new Table({
     name: 'MetricsTestTable',
     client: Client,
+    partial: false,
     schema: TenantSchema,
 })
 let user: any
 let users: any[]
 const accountId = table.uuid()
 
-test('Create Table', async() => {
+test('Create Table', async () => {
     if (!(await table.exists())) {
         await table.createTable()
         expect(await table.exists()).toBe(true)
@@ -26,7 +27,7 @@ test('Create Table', async() => {
 
 let User = table.getModel('User')
 
-test('Create Users', async() => {
+test('Create Users', async () => {
     for (let i = 0; i < MaxUsers; i++) {
         await User.create({accountId, name: `User-${i}`, email: `u-${i}@example.com`})
     }
@@ -34,7 +35,7 @@ test('Create Users', async() => {
     expect(users.length).toBe(MaxUsers)
 })
 
-test('Find with stats', async() => {
+test('Find with stats', async () => {
     let stats: any = {}
     users = await User.find({accountId}, {stats})
     expect(stats.count).toBe(MaxUsers)
@@ -42,7 +43,7 @@ test('Find with stats', async() => {
     expect(stats.capacity).toBeDefined()
 })
 
-test('Destroy Table', async() => {
+test('Destroy Table', async () => {
     await table.deleteTable('DeleteTableForever')
     expect(await table.exists()).toBe(false)
 })

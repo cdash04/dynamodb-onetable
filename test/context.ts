@@ -1,7 +1,7 @@
 /*
     context.ts - Test context APIs
  */
-import {AWS, Client, Match, Table, print, dump, delay} from './utils/init'
+import {AWS, Client, Entity, Match, Table, print, dump, delay} from './utils/init'
 import {TenantSchema} from './schemas'
 
 // jest.setTimeout(7200 * 1000)
@@ -9,18 +9,20 @@ import {TenantSchema} from './schemas'
 const table = new Table({
     name: 'ContextTestTable',
     client: Client,
+    partial: false,
     schema: TenantSchema,
     logger: true,
 })
 const accountId = table.uuid()
 
-test('Create table', async() => {
+test('Create table', async () => {
     if (!(await table.exists())) {
         await table.createTable()
         expect(await table.exists()).toBe(true)
     }
 })
 
+type UserType = Entity<typeof TenantSchema.models.User>
 let User = table.getModel('User')
 let Account = table.getModel('Account')
 let account: any
@@ -28,18 +30,18 @@ let user: any
 let users: any[]
 
 let data = [
-    {name: 'Peter Smith', email: 'peter@example.com' },
-    {name: 'Patty O\'Furniture', email: 'patty@example.com' },
-    {name: 'Cu Later', email: 'cu@example.com' },
+    {name: 'Peter Smith', email: 'peter@example.com'},
+    {name: "Patty O'Furniture", email: 'patty@example.com'},
+    {name: 'Cu Later', email: 'cu@example.com'},
 ]
 
-test('Create account', async() => {
+test('Create account', async () => {
     account = await Account.create({name: 'Acme'})
     expect(account.name).toBe('Acme')
     expect(account.id).toMatch(Match.ulid)
 })
 
-test('Set context', async() => {
+test('Set context', async () => {
     table.setContext({accountId: account.id})
     let context: any = table.getContext()
     expect(context).toMatchObject({accountId: account.id})
@@ -55,7 +57,7 @@ test('Set context', async() => {
     expect(context).toMatchObject({accountId: account.id})
 })
 
-test('Add context', async() => {
+test('Add context', async () => {
     table.setContext({accountId: account.id})
     let context: any = table.getContext()
     expect(context).toMatchObject({accountId: account.id})
@@ -70,7 +72,7 @@ test('Add context', async() => {
     expect(context).toMatchObject({accountId: account.id})
 })
 
-test('Create users', async() => {
+test('Create users', async () => {
     for (let item of data) {
         //  Account ID comes from context
         user = await User.create(item)
@@ -86,7 +88,7 @@ test('Create users', async() => {
     expect(collection.User.length).toBe(data.length)
 })
 
-test('Get users', async() => {
+test('Get users', async () => {
     //  PK comes from context
     users = await User.find()
     expect(users.length).toBe(data.length)
@@ -97,7 +99,7 @@ test('Get users', async() => {
     }).rejects.toThrow()
 })
 
-test('Get single user', async() => {
+test('Get single user', async () => {
     //  PK comes from context
     user = await User.get({email: 'peter@example.com'})
     expect(user.email).toBe('peter@example.com')
@@ -108,19 +110,20 @@ test('Get single user', async() => {
     }).rejects.toThrow()
 })
 
-test('Remove many users (returning ALL_OLD)', async() => {
+test('Remove many users (returning ALL_OLD)', async () => {
     //  PK comes from context
-    let removed = await User.remove({}, {many: true})
+    let removed: any = await User.remove({}, {many: true})
     expect(removed).toHaveLength(3)
-    expect(removed[0].email).toEqual('peter@example.com')
-    expect(removed[1].email).toEqual('patty@example.com')
-    expect(removed[2].email).toEqual('cu@example.com')
-
+    if (removed) {
+        expect(removed[0].email).toEqual('peter@example.com')
+        expect(removed[1].email).toEqual('patty@example.com')
+        expect(removed[2].email).toEqual('cu@example.com')
+    }
     users = await User.scan()
     expect(users.length).toBe(0)
 })
 
-test('Clear context', async() => {
+test('Clear context', async () => {
     //  PK comes from context
     let context = table.getContext()
     expect(context).toMatchObject({accountId: account.id})
@@ -130,7 +133,7 @@ test('Clear context', async() => {
     expect(context).toMatchObject({})
 })
 
-test('Destroy Table', async() => {
+test('Destroy Table', async () => {
     await table.deleteTable('DeleteTableForever')
     expect(await table.exists()).toBe(false)
 })

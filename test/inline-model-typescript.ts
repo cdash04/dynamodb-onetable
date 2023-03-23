@@ -9,24 +9,26 @@
  */
 import {AWS, Client, Entity, Model, Table, dump, print} from './utils/init'
 
-const table = new Table({
+// send any schema because it gets modified
+const table = new Table<any>({
     name: 'InlineModelTypeScriptTestTable',
     client: Client,
+    partial: false,
     schema: {
         version: '0.0.1',
         indexes: {primary: {hash: 'pk'}},
         models: {},
-    }
+    },
 })
 
 const CardSchema = {
-    pk:     { type: 'string', value: 'card:${id}' },
-    id:     { type: 'number' },
-    issuer: { type: 'string' },
+    pk: {type: 'string', value: 'card:${id}'},
+    id: {type: 'number'},
+    issuer: {type: 'string'},
 } as const
 
 type CardType = Entity<typeof CardSchema>
-let Card: Model<CardType> = null
+let Card: Model<Entity<typeof CardSchema>>
 
 test('Create table', async () => {
     if (!(await table.exists())) {
@@ -57,7 +59,7 @@ test('Create item', async () => {
     expect(card.pk).toBe('card:42')
 })
 
-test('Add model', async() =>{
+test('Add model', async () => {
     let base = table.listModels()
     table.addModel('Card', CardSchema)
 
@@ -65,24 +67,24 @@ test('Add model', async() =>{
     expect(models.length - base.length).toBe(1)
     expect(models[models.length - 1]).toBe('Card')
 
-    let Card = table.getModel<CardType>('Card')
+    let Card = table.getModel('Card')
     expect(Card).toBeDefined()
     let card = await Card.create({id: 99, issuer: 'amex'})
     expect(card.issuer).toBe('amex')
 })
 
-test('Remove model', async() => {
+test('Remove model', async () => {
     let base = table.listModels()
 
     table.removeModel('Card')
     let models = table.listModels()
     expect(base.length - models.length).toBe(1)
 
-    await expect(async() => {
+    await expect(async () => {
         table.removeModel('Unknown')
     }).rejects.toThrow()
 })
 
-test('Destroy table', async() => {
+test('Destroy table', async () => {
     await table.deleteTable('DeleteTableForever')
 })

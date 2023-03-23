@@ -7,10 +7,12 @@
 import Crypto from 'crypto'
 import UUID from './UUID.js'
 import ULID from './ULID.js'
+import UID from './UID.js'
 import {Expression} from './Expression.js'
 import {Schema} from './Schema.js'
 import {Metrics} from './Metrics.js'
 import {OneTableArgError, OneTableError} from './Error.js'
+import {unmarshall} from '@aws-sdk/util-dynamodb'
 
 /*
     AWS V2 DocumentClient methods
@@ -59,7 +61,6 @@ const maxBatchSize = 25
     Represent a single DynamoDB table
  */
 export class Table {
-
     constructor(params = {}) {
         if (!params.name) {
             throw new OneTableArgError('Missing "name" property')
@@ -82,9 +83,18 @@ export class Table {
             }
         }
         this.setParams(params)
+
+        //  Set schema param defaults
+        this.typeField = '_type'
+        this.createdField = 'created'
+        this.isoDates = false
+        this.nulls = false
+        this.timestamps = false
+        this.updatedField = 'updated'
+
         this.schema = new Schema(this, params.schema)
         if (params.dataloader) {
-            this.dataloader = new params.dataloader(cmds => this.batchLoaderFunction(cmds), {maxBatchSize})
+            this.dataloader = new params.dataloader((cmds) => this.batchLoaderFunction(cmds), {maxBatchSize})
         }
     }
 
@@ -95,40 +105,45 @@ export class Table {
     }
 
     setParams(params) {
-        //  DEPRECATED - these should be supplied by the schema.params
-        if (params.createdField != null || this.hidden != null || this.isoDates != null || this.nulls != null ||
-                this.timestamps != null || this.typeField != null || this.updatedField != null) {
-            console.warn('OneTable: Using deprecated Table constructor parameters. Define in the schema.params instead.')
-            //  FUTURE 2.3
-            //  throw new OneTableArgError('Using deprecated Table constructor parameters. Define in the schema.params instead.')
+        if (
+            params.createdField != null ||
+            this.isoDates != null ||
+            this.nulls != null ||
+            this.timestamps != null ||
+            this.typeField != null ||
+            this.updatedField != null
+        ) {
+            throw new OneTableArgError(
+                'Using deprecated Table constructor parameters. Define in the Schema.params instead.'
+            )
         }
-        this.createdField = params.createdField || 'created'
-        this.hidden = params.hidden != null ? params.hidden : true
-        this.isoDates = params.isoDates || false
-        this.nulls = params.nulls || false
-        this.timestamps = params.timestamps != null ? params.timestamps : false
-        this.typeField = params.typeField || '_type'
-        this.updatedField = params.updatedField || 'updated'
-        this.warn = params.warn || true
 
         if (params.uuid) {
-            console.warn('OneTable: Using deprecated Table constructor "uuid" parameter. Use a "generate" function instead or ' +
-                         'Set schema models to use "generate: uuid|ulid" explicitly.')
+            console.warn(
+                'OneTable: Using deprecated Table constructor "uuid" parameter. Use a "generate" function instead or ' +
+                    'Set schema models to use "generate: uuid|ulid" explicitly.'
+            )
             params.generate = params.generate | params.uuid
         }
+
+        if (params.partial == null) {
+            console.warn(
+                'OneTable: Must set Table constructor "partial" param to true or false. ' +
+                    'This param permits updating partial nested schemas. Currently defaults to false, ' +
+                    'but in a future version will default to true. ' +
+                    'Set to false to future proof or set to true for the new behavior.'
+            )
+            params.partial = true
+        }
+        //  Return hidden fields by default. Default is false.
+        this.hidden = params.hidden != null ? params.hidden : false
+        this.partial = params.partial
+        this.warn = params.warn || true
 
         if (typeof params.generate == 'function') {
             this.generate = params.generate || this.uuid
         } else if (params.generate) {
-            //  FUTURE throw exception
-            console.warn('OneTable: Generate can only be a function')
-            if (params.generate == 'uuid') {
-                this.generate = this.uuid
-            } else if (params.generate == 'ulid') {
-                this.generate = this.ulid
-            } else {
-                this.generate = this.uuid
-            }
+            throw new OneTableArgError('OneTable: Generate can only be a function')
         }
 
         this.name = params.name
@@ -142,20 +157,22 @@ export class Table {
         this.params = params
     }
 
-    setSchemaParams(params) {
+    setSchemaParams(params = {}) {
         this.createdField = params.createdField || 'created'
-        this.hidden = params.hidden != null ? params.hidden : true
         this.isoDates = params.isoDates || false
         this.nulls = params.nulls || false
         this.timestamps = params.timestamps != null ? params.timestamps : false
         this.typeField = params.typeField || '_type'
         this.updatedField = params.updatedField || 'updated'
+
+        if (params.hidden != null) {
+            console.warn(`Schema hidden params should be specified via the Table constructor params`)
+        }
     }
 
     getSchemaParams() {
         return {
             createdField: this.createdField,
-            hidden: this.hidden,
             isoDates: this.isoDates,
             nulls: this.nulls,
             timestamps: this.timestamps,
@@ -198,10 +215,11 @@ export class Table {
     }
 
     /*
-        Create a DynamoDB table. Uses the current schema index definition.
+        Output the AWS table definition as a JSON structure to use in external tools such as CloudFormation
+        or the AWS CLI to create your DynamoDB table. Uses the current schema index definition.
         Alternatively, params may contain standard DynamoDB createTable parameters.
     */
-    async createTable(params = {}) {
+    getTableDefinition(params = {}) {
         let def = {
             AttributeDefinitions: [],
             KeySchema: [],
@@ -220,6 +238,9 @@ export class Table {
         } else {
             def.BillingMode = 'PAY_PER_REQUEST'
         }
+        if (params.StreamSpecification) {
+            def.StreamSpecification = params.StreamSpecification
+        }
         let attributes = {}
         let {indexes} = this.schema
 
@@ -236,7 +257,7 @@ export class Table {
                 let project, projection
                 if (Array.isArray(index.project)) {
                     projection = 'INCLUDE'
-                    project = index.project.filter(a => a != indexes.primary.hash && a != indexes.primary.sort)
+                    project = index.project.filter((a) => a != indexes.primary.hash && a != indexes.primary.sort)
                 } else if (index.project == 'keys') {
                     projection = 'KEYS_ONLY'
                 } else {
@@ -247,7 +268,7 @@ export class Table {
                     KeySchema: keys,
                     Projection: {
                         ProjectionType: projection,
-                    }
+                    },
                 }
                 if (project) {
                     projDef.Projection.NonKeyAttributes = project
@@ -272,7 +293,6 @@ export class Table {
         }
         if (def.GlobalSecondaryIndexes.length == 0) {
             delete def.GlobalSecondaryIndexes
-
         } else if (provisioned) {
             for (let index of def.GlobalSecondaryIndexes) {
                 index.ProvisionedThroughput = provisioned
@@ -281,12 +301,60 @@ export class Table {
         if (def.LocalSecondaryIndexes.length == 0) {
             delete def.LocalSecondaryIndexes
         }
+        return def
+    }
+
+    /*
+        Create a DynamoDB table. Uses the current schema index definition.
+        Alternatively, params may contain standard DynamoDB createTable parameters.
+    */
+    async createTable(params = {}) {
+        const def = this.getTableDefinition(params)
+        let result
+
         this.log.trace(`OneTable createTable for "${this.name}"`, {def})
         if (this.V3) {
-            return await this.service.createTable(def)
+            result = await this.service.createTable(def)
         } else {
-            return await this.service.createTable(def).promise()
+            result = await this.service.createTable(def).promise()
         }
+
+        /*
+            Wait for table to become active. Must do if setting a TTL attribute
+        */
+        if (params.TimeToLiveSpecification) {
+            params.wait = 5 * 60
+        }
+        if (params.wait) {
+            let deadline = new Date(Date.now() + params.wait * 1000)
+            let info
+            do {
+                info = await this.describeTable()
+                if (info.Table.TableStatus == 'ACTIVE') {
+                    break
+                }
+                if (deadline < Date.now()) {
+                    throw new Error('Table has not become active')
+                }
+                await this.delay(1000)
+            } while (Date.now() < deadline)
+        }
+
+        /*
+            Define a TTL attribute
+        */
+        if (params.TimeToLiveSpecification) {
+            let def = {
+                TableName: this.name,
+                TimeToLiveSpecification: params.TimeToLiveSpecification,
+            }
+            if (this.V3) {
+                await this.service.updateTimeToLive(def)
+            } else {
+                await this.service.updateTimeToLive(def).promise()
+            }
+        }
+        return result
     }
 
     getAttributeType(name) {
@@ -346,7 +414,7 @@ export class Table {
 
             if (Array.isArray(create.project)) {
                 projection = 'INCLUDE'
-                project = create.project.filter(a => a != create.hash && a != create.sort)
+                project = create.project.filter((a) => a != create.hash && a != create.sort)
             } else if (create.project == 'keys') {
                 projection = 'KEYS_ONLY'
             } else {
@@ -357,7 +425,7 @@ export class Table {
                 KeySchema: keys,
                 Projection: {
                     ProjectionType: projection,
-                }
+                },
             }
             if (project) {
                 projDef.Projection.NonKeyAttributes = project
@@ -373,10 +441,8 @@ export class Table {
                 projDef.ProvisionedThroughput = provisioned
             }
             def.GlobalSecondaryIndexUpdates.push({Create: projDef})
-
         } else if (params.remove) {
             def.GlobalSecondaryIndexUpdates.push({Delete: {IndexName: params.remove.name}})
-
         } else if (params.update) {
             let update = {Update: {IndexName: params.update.name}}
             if (provisioned) {
@@ -386,7 +452,17 @@ export class Table {
         }
         if (def.GlobalSecondaryIndexUpdates.length == 0) {
             delete def.GlobalSecondaryIndexUpdates
-
+        }
+        if (params.TimeToLiveSpecification) {
+            let def = {
+                TableName: params.TableName,
+                TimeToLiveSpecification: params.TimeToLiveSpecification,
+            }
+            if (this.V3) {
+                await this.service.updateTimeToLive(def)
+            } else {
+                await this.service.updateTimeToLive(def).promise()
+            }
         }
         this.log.trace(`OneTable updateTable for "${this.name}"`, {def})
         if (this.V3) {
@@ -412,7 +488,7 @@ export class Table {
     */
     async exists() {
         let results = await this.listTables()
-        return results && results.find(t => t == this.name) != null ? true : false
+        return results && results.find((t) => t == this.name) != null ? true : false
     }
 
     /*
@@ -479,7 +555,7 @@ export class Table {
     */
     child(context) {
         let table = JSON.parse(JSON.stringify(this))
-        table.context  = context
+        table.context = context
         return table
     }
 
@@ -528,6 +604,11 @@ export class Table {
         return await model.update(properties, params)
     }
 
+    async upsert(modelName, properties, params = {}) {
+        params.exists = null
+        return this.update(modelName, properties, params)
+    }
+
     async execute(model, op, cmd, properties = {}, params = {}) {
         let mark = new Date()
         let trace = {model, cmd, op, properties}
@@ -544,39 +625,42 @@ export class Table {
             } else {
                 result = await client[DocumentClientMethods[op]](cmd).promise()
             }
-
         } catch (err) {
             //  V3 stores the error in 'name' (Ugh!)
             let code = err.code || err.name
             if (params.throw === false) {
                 result = {}
-
             } else if (code == 'ConditionalCheckFailedException' && op == 'put') {
                 this.log.info(`Conditional check failed "${op}" on "${model}"`, {err, trace})
                 throw new OneTableError(`Conditional create failed for "${model}"`, {
-                    code, err, trace,
+                    code,
+                    err,
+                    trace,
                 })
-
             } else if (code == 'ProvisionedThroughputExceededException') {
                 throw new OneTableError('Provisioning Throughput Exception', {
-                    code, err, trace,
+                    code,
+                    err,
+                    trace,
                 })
             } else if (code == 'TransactionCanceledException') {
                 throw new OneTableError('Transaction Cancelled', {
-                    code, err, trace,
+                    code,
+                    err,
+                    trace,
                 })
-
             } else {
                 result = result || {}
                 result.Error = 1
                 if (params.log != false) {
-                    this.log.error(`OneTable exception in "${op}" on "${model}"`, {err, trace})
+                    this.log.error(`OneTable exception in "${op}" on "${model} ${err.message}"`, {err, trace})
                 }
-                throw new OneTableError(`OneTable execute failed "${op}" for "${model}. ${err.message}`, {
-                    code, err, trace,
+                throw new OneTableError(`OneTable execute failed "${op}" for "${model}", ${err.message}`, {
+                    code,
+                    err,
+                    trace,
                 })
             }
-
         } finally {
             if (result) {
                 if (this.metrics) {
@@ -615,27 +699,53 @@ export class Table {
         }
         def.ConsistentRead = params.consistent ? true : false
 
-        let result = await this.execute(GenericModel, 'batchGet', batch, {}, params)
+        // let result = await this.execute(GenericModel, 'batchGet', batch, {}, params)
 
-        let response = result.Responses
-        if (params.parse && response) {
-            result = []
-            for (let items of Object.values(response)) {
-                for (let item of items) {
-                    item = this.unmarshall(item, params)
-                    let type = item[this.typeField] || '_unknown'
-                    let model = this.schema.models[type]
-                    if (model && model != this.schema.uniqueModel) {
-                        result.push(model.transformReadItem('get', item, {}, params))
+        let result,
+            retries = 0,
+            more
+        result = params.parse ? [] : {Responses: {}}
+        do {
+            more = false
+            let data = await this.execute(GenericModel, 'batchGet', batch, {}, params)
+            if (data) {
+                let responses = data.Responses
+                if (responses) {
+                    for (let [key, items] of Object.entries(responses)) {
+                        for (let item of items) {
+                            if (params.parse) {
+                                item = this.unmarshall(item, params)
+                                let type = item[this.typeField] || '_unknown'
+                                let model = this.schema.models[type]
+                                if (model && model != this.schema.uniqueModel) {
+                                    result.push(model.transformReadItem('get', item, {}, params))
+                                }
+                            } else {
+                                let set = (result.Responses[key] = result.Responses[key] || [])
+                                set.push(item)
+                            }
+                        }
                     }
                 }
+                let unprocessed = data.UnprocessedItems
+                if (unprocessed && Object.keys(unprocessed).length) {
+                    batch.RequestItems = unprocessed
+                    if (params.reprocess === false) {
+                        return false
+                    }
+                    if (retries > 11) {
+                        throw new Error(unprocessed)
+                    }
+                    await this.delay(10 * 2 ** retries++)
+                    more = true
+                }
             }
-        }
+        } while (more)
         return result
     }
 
     /*
-        AWS BatchWrite may throw an exception of no items can be processed.
+        AWS BatchWrite may throw an exception if no items can be processed.
         Otherwise it will retry (up to 11 times) and return partial results in UnprocessedItems.
         Those will be handled here if possible.
     */
@@ -643,7 +753,8 @@ export class Table {
         if (Object.getOwnPropertyNames(batch).length == 0) {
             return {}
         }
-        let retries = 0, more
+        let retries = 0,
+            more
         do {
             more = false
             let response = await this.execute(GenericModel, 'batchWrite', batch, {}, params)
@@ -656,7 +767,7 @@ export class Table {
                 if (retries > 11) {
                     throw new Error(response.UnprocessedItems)
                 }
-                await this.delay(10 * (2 ** retries++))
+                await this.delay(10 * 2 ** retries++)
                 more = true
             }
         } while (more)
@@ -702,8 +813,23 @@ export class Table {
         Invoke a prepared transaction. Note: transactGet does not work on non-primary indexes.
      */
     async transact(op, transaction, params = {}) {
-        let result = await this.execute(GenericModel,
-            op == 'write' ? 'transactWrite' : 'transactGet', transaction, {}, params)
+        if (params.execute === false) {
+            if (params.log !== false) {
+                this.log[params.log ? 'info' : 'data'](`OneTable transaction for "${op}" (not executed)`, {
+                    transaction,
+                    op,
+                    params,
+                })
+            }
+            return transaction
+        }
+        let result = await this.execute(
+            GenericModel,
+            op == 'write' ? 'transactWrite' : 'transactGet',
+            transaction,
+            {},
+            params
+        )
         if (op == 'get') {
             if (params.parse) {
                 let items = []
@@ -726,11 +852,11 @@ export class Table {
     /*
         Convert items into a map of items by model type
     */
-    groupByType(items, params={}) {
+    groupByType(items, params = {}) {
         let result = {}
         for (let item of items) {
             let type = item[this.typeField] || '_unknown'
-            let list = result[type] = result[type] || []
+            let list = (result[type] = result[type] || [])
             let model = this.schema.models[type]
             let preparedItem
             if (typeof params.hidden === 'boolean' && !params.hidden) {
@@ -750,18 +876,17 @@ export class Table {
     }
 
     /**
-     * this is a function passed to the DataLoader that given an array of Expression
-     * will group all commands by TableName and make all Keys unique and then will perform
-     * a BatchGet request and process the response of the BatchRequest to return an array
-     * with the corresponding response in the same order as it was requested.
-     *
-     * @param expressions
-     * @returns {Promise<*>}
+        This is a function passed to the DataLoader that given an array of Expression
+        will group all commands by TableName and make all Keys unique and then will perform
+        a BatchGet request and process the response of the BatchRequest to return an array
+        with the corresponding response in the same order as it was requested.
+        @param expressions
+        @returns {Promise<*>}
      */
     async batchLoaderFunction(expressions) {
-        const commands = expressions.map(each => each.command())
+        const commands = expressions.map((each) => each.command())
 
-        const groupedByTableName =  commands.reduce((groupedBy, item) => {
+        const groupedByTableName = commands.reduce((groupedBy, item) => {
             const tableName = item.TableName
             if (!groupedBy[tableName]) groupedBy[tableName] = []
             groupedBy[tableName].push(item)
@@ -772,10 +897,10 @@ export class Table {
         const requestItems = Object.keys(groupedByTableName).reduce((requestItems, tableName) => {
             // batch get does not support duplicate Keys, so we need to make them unique
             // it's complex because we have the unmarshalled values on the Keys when it's V3
-            const allKeys = groupedByTableName[tableName].map(each => each.Key)
+            const allKeys = groupedByTableName[tableName].map((each) => each.Key)
             const uniqueKeys = allKeys.filter((key1, index1, self) => {
-                const index2 = self.findIndex(key2 => {
-                    return Object.keys(key2).every(prop => {
+                const index2 = self.findIndex((key2) => {
+                    return Object.keys(key2).every((prop) => {
                         if (this.V3) {
                             const type = Object.keys(key1[prop])[0] // { S: "XX" } => type is S
                             return key2[prop][type] === key1[prop][type]
@@ -807,12 +932,13 @@ export class Table {
             })
 
             // finds the matching object in the unmarshalled Responses array with criteria Key above
-            const findByKeyUnmarshalled = (items = []) => items.find(item => {
-                return criteria.every(([[prop, type], value]) => {
-                    if (type) return item[prop][type] === value // if it has a type it means it is V3
-                    return item[prop] === value
+            const findByKeyUnmarshalled = (items = []) =>
+                items.find((item) => {
+                    return criteria.every(([[prop, type], value]) => {
+                        if (type) return item[prop][type] === value // if it has a type it means it is V3
+                        return item[prop] === value
+                    })
                 })
-            })
 
             const items = results.Responses[command.TableName]
             const item = findByKeyUnmarshalled(items)
@@ -834,6 +960,13 @@ export class Table {
     // Simple time-based, sortable unique ID.
     ulid() {
         return new ULID().toString()
+    }
+
+    /*
+        Crypto-grade ID of given length. If >= 10 in length, suitably unique for most use-cases.
+     */
+    uid(size = 10) {
+        return UID(size)
     }
 
     setGenerate(fn) {
@@ -876,7 +1009,7 @@ export class Table {
             let iv = Crypto.randomBytes(IV_LENGTH)
             let crypt = Crypto.createCipheriv(crypto.cipher, crypto.secret, iv)
             let crypted = crypt.update(text, inCode, outCode) + crypt.final(outCode)
-            let tag = (crypto.cipher.indexOf('-gcm') > 0) ? crypt.getAuthTag().toString(outCode) : ''
+            let tag = crypto.cipher.indexOf('-gcm') > 0 ? crypt.getAuthTag().toString(outCode) : ''
             text = `${crypto.name}:${tag}:${iv.toString('hex')}:${crypted}`
         }
         return text
@@ -934,7 +1067,7 @@ export class Table {
     */
     unmarshall(item, params) {
         if (this.V3) {
-            let client = params?.client || this.client
+            let client = params.client ? params.client : this.client
             let options = client.params.unmarshall
             if (Array.isArray(item)) {
                 for (let i = 0; i < item.length; i++) {
@@ -951,13 +1084,12 @@ export class Table {
             } else {
                 item = this.unmarshallv2(item)
             }
-
         }
         return item
     }
 
     marshallv2(item, params) {
-        let client = params?.client || this.client
+        let client = params.client ? params.client : this.client
         for (let [key, value] of Object.entries(item)) {
             if (value instanceof Set) {
                 item[key] = client.createSet(Array.from(value))
@@ -968,16 +1100,83 @@ export class Table {
 
     unmarshallv2(item) {
         for (let [key, value] of Object.entries(item)) {
-            if (value != null && typeof value == 'object' && value.wrapperName == 'Set' && Array.isArray(value.values)) {
+            if (
+                value != null &&
+                typeof value == 'object' &&
+                value.wrapperName == 'Set' &&
+                Array.isArray(value.values)
+            ) {
                 let list = value.values
                 if (value.type == 'Binary') {
                     //  Match AWS SDK V3 behavior
-                    list = list.map(v => new Uint8Array(v))
+                    list = list.map((v) => new Uint8Array(v))
                 }
                 item[key] = new Set(list)
             }
         }
         return item
+    }
+
+    unmarshallStreamImage(image, params) {
+        if (!this.V3) {
+            return unmarshall(image)
+        }
+
+        let client = params.client ? params.client : this.client
+        let options = client.params.unmarshall
+        return client.unmarshall(image, options)
+    }
+
+    /*
+        Handle DynamoDb Stream Records
+     */
+    stream(records, params = {}) {
+        const tableModels = this.listModels()
+
+        const result = {}
+        for (const record of records) {
+            if (!record.dynamodb.NewImage && !record.dynamodb.OldImage) {
+                continue
+            }
+
+            const model = {
+                type: record.eventName,
+            }
+            let typeNew
+            let typeOld
+
+            // Unmarshall and transform the New Image if it exists
+            if (record.dynamodb.NewImage) {
+                const jsonNew = this.unmarshallStreamImage(record.dynamodb.NewImage, params)
+                typeNew = jsonNew[this.typeField]
+
+                // If type not found then don't do anything
+                if (typeNew && tableModels.includes(typeNew)) {
+                    model.new = this.schema.models[typeNew].transformReadItem('get', jsonNew, {}, params)
+                }
+            }
+
+            // Unmarshall and transform the Old Image if it exists
+            if (record.dynamodb.OldImage) {
+                const jsonOld = this.unmarshallStreamImage(record.dynamodb.OldImage, params)
+                typeOld = jsonOld[this.typeField]
+
+                // If type not found then don't do anything
+                if (typeOld && tableModels.includes(typeOld)) {
+                    // If there was a new image of a different type then skip
+                    if (typeNew && typeNew !== typeOld) {
+                        continue
+                    }
+                    model.old = this.schema.models[typeOld].transformReadItem('get', jsonOld, {}, params)
+                }
+            }
+
+            const type = typeNew || typeOld
+            let list = (result[type] = result[type] || [])
+            list.push(model)
+        }
+
+        return result
     }
 
     /*
@@ -995,7 +1194,7 @@ export class Table {
     }
 
     assignInner(dest, src, recurse = 0) {
-        if (recurse++ > 20) {
+        if (recurse++ > 1000) {
             throw new OneTableError('Recursive merge', {code: 'RuntimeError'})
         }
         if (!src || !dest || typeof src != 'object') {
@@ -1004,13 +1203,10 @@ export class Table {
         for (let [key, v] of Object.entries(src)) {
             if (v === undefined) {
                 continue
-
             } else if (v instanceof Date) {
                 dest[key] = new Date(v)
-
             } else if (v instanceof RegExp) {
                 dest[key] = new RegExp(v.source, v.flags)
-
             } else if (Array.isArray(v)) {
                 if (!Array.isArray(dest[key])) {
                     dest[key] = []
@@ -1018,13 +1214,11 @@ export class Table {
                 if (v.length) {
                     dest[key] = this.assignInner([key], v, recurse)
                 }
-
             } else if (typeof v == 'object' && v != null && v.constructor.name == 'Object') {
                 if (typeof dest[key] != 'object') {
                     dest[key] = {}
                 }
                 dest[key] = this.assignInner(dest[key], v, recurse)
-
             } else {
                 dest[key] = v
             }
@@ -1033,7 +1227,7 @@ export class Table {
     }
 
     async delay(time) {
-        return new Promise(function(resolve) {
+        return new Promise(function (resolve) {
             setTimeout(() => resolve(true), time)
         })
     }
@@ -1087,7 +1281,20 @@ class Log {
             return
         }
         if (context) {
-            console.log(level, message, JSON.stringify(context, null, 4))
+            try {
+                console.log(level, message, JSON.stringify(context, null, 4))
+            } catch (err) {
+                let buf = ['{']
+                for (let [key, value] of Object.entries(context)) {
+                    try {
+                        buf.push(`    ${key}: ${JSON.stringify(value, null, 4)}`)
+                    } catch (err) {
+                        /* continue */
+                    }
+                }
+                buf.push('}')
+                console.log(level, message, buf.join('\n'))
+            }
         } else {
             console.log(level, message)
         }

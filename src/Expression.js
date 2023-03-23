@@ -3,14 +3,12 @@
 
     This module converts API requests into DynamoDB commands.
 */
-
 import {OneTableArgError, OneTableError} from './Error.js'
 
 //  Operators used on sort keys for get/delete
-const KeyOperators =    [ '<', '<=', '=', '>=', '>', 'begins', 'begins_with', 'between' ]
+const KeyOperators = ['<', '<=', '=', '>=', '>', 'begins', 'begins_with', 'between']
 
 export class Expression {
-
     constructor(model, op, properties, params = {}) {
         this.init(model, op, properties, params)
         this.prepare()
@@ -23,20 +21,20 @@ export class Expression {
         this.params = params
 
         this.table = model.table
-        this.already = {}           //  Fields already processed (index is property name).
-        this.conditions = []        //  Condition expressions.
-        this.filters = []           //  Filter expressions.
-        this.key = {}               //  Primary key attribute.
-        this.keys = []              //  Key conditions.
-        this.mapped = {}            //  Mapped fields.
-        this.names = {}             //  Expression names. Keys are the indexes.
-        this.namesMap = {}          //  Expression names reverse map. Keys are the names.
-        this.puts = {}              //  Put values
-        this.project = []           //  Projection expressions.
-        this.values = {}            //  Expression values. Keys are the value indexes.
-        this.valuesMap = {}         //  Expression values reverse map. Keys are the values.
-        this.nindex = 0             //  Next index into names.
-        this.vindex = 0             //  Next index into values.
+        this.already = {} //  Fields already processed (index is property name).
+        this.conditions = [] //  Condition expressions.
+        this.filters = [] //  Filter expressions.
+        this.key = {} //  Primary key attribute.
+        this.keys = [] //  Key conditions.
+        this.mapped = {} //  Mapped fields.
+        this.names = {} //  Expression names. Keys are the indexes.
+        this.namesMap = {} //  Expression names reverse map. Keys are the names.
+        this.puts = {} //  Put values
+        this.project = [] //  Projection expressions.
+        this.values = {} //  Expression values. Keys are the value indexes.
+        this.valuesMap = {} //  Expression values reverse map. Keys are the values.
+        this.nindex = 0 //  Next index into names.
+        this.vindex = 0 //  Next index into values.
         this.updates = {
             add: [],
             delete: [],
@@ -66,38 +64,24 @@ export class Expression {
         let {op, params, properties} = this
         let fields = this.model.block.fields
         if (op == 'find') {
-            this.addFilters()
-
-        } else if (op == 'delete' || op == 'put' || op == 'update') {
+            this.addWhereFilters()
+        } else if (op == 'delete' || op == 'put' || op == 'update' || op == 'check') {
             this.addConditions(op)
-
         } else if (op == 'scan') {
-            this.addFilters()
+            this.addWhereFilters()
             /*
                 Setup scan filters for properties outside the model.
                 Use the property name here as there can't be a mapping.
             */
             for (let [name, value] of Object.entries(this.properties)) {
                 if (fields[name] == null && value != null) {
-                    this.addFilter(name, value)
+                    this.addGenericFilter(name, value)
                     this.already[name] = true
                 }
             }
         }
 
-        /*
-            Parse the API properties. Only accept properties defined in the schema unless generic.
-        */
-        for (let [name, value] of Object.entries(properties)) {
-            if (this.already[name]) {
-                continue
-            }
-            if (fields[name]) {
-                this.add(fields[name], value)
-            } else if (this.model.generic) {
-                this.add({attribute: [name], name}, value)
-            }
-        }
+        this.addProperties(op, null, fields, properties)
 
         /*
             Emit mapped attributes that don't correspond to schema fields.
@@ -105,11 +89,13 @@ export class Expression {
         if (this.mapped) {
             for (let [att, props] of Object.entries(this.mapped)) {
                 if (Object.keys(props).length != this.model.mappings[att].length) {
-                    throw new OneTableArgError(`Missing properties for mapped data field "${att}" in model "${this.model.name}"`)
+                    throw new OneTableArgError(
+                        `Missing properties for mapped data field "${att}" in model "${this.model.name}"`
+                    )
                 }
             }
-            for (let [k,v] of Object.entries(this.mapped)) {
-                this.add({attribute: [k], name: k, filter: false}, v, properties)
+            for (let [k, v] of Object.entries(this.mapped)) {
+                this.add(null, properties, {attribute: [k], name: k, filter: false}, v, properties)
             }
         }
         if (params.fields) {
@@ -125,11 +111,43 @@ export class Expression {
         }
     }
 
+    addProperties(op, pathname, fields, properties) {
+        for (let [name, value] of Object.entries(properties)) {
+            if (this.already[name]) {
+                continue
+            }
+            let field = fields[name]
+            if (field) {
+                let partial = this.model.getPartial(field, this.params)
+                if (op != 'put' && partial) {
+                    if (field.schema && value != null) {
+                        let path = pathname ? `${pathname}.${field.attribute[0]}` : field.attribute[0]
+                        if (field.isArray && Array.isArray(value)) {
+                            let i = 0
+                            for (let rvalue of value) {
+                                let indexPath = path ? `${path}[${i}]` : `${path}[${i}]`
+                                this.addProperties(op, indexPath, field.block.fields, rvalue)
+                                i++
+                            }
+                        } else {
+                            this.addProperties(op, path, field.block.fields, value)
+                        }
+                    } else {
+                        this.add(pathname, properties, field, value)
+                    }
+                } else {
+                    this.add(pathname, properties, field, value)
+                }
+            } else if (this.model.generic) {
+                this.add(pathname, properties, {attribute: [name], name}, value)
+            }
+        }
+    }
+
     /*
         Add a field to the command expression
      */
-    add(field, value) {
-        let properties = this.properties
+    add(pathname, properties, field, value) {
         let op = this.op
         let attribute = field.attribute
 
@@ -139,49 +157,42 @@ export class Expression {
         */
         if (attribute.length > 1) {
             let mapped = this.mapped
-            let [k,v] = attribute
+            let [k, v] = attribute
             mapped[k] = mapped[k] || {}
             mapped[k][v] = value
             properties[k] = value
             return
         }
-        //  Pathname may contain a '.'
-        let pathname = attribute[0]
-        let att = pathname.split('.').shift()
+        //  May contain a '.'
+        let path = pathname ? `${pathname}.${attribute[0]}` : attribute[0]
 
-        if (att == this.hash || att == this.sort) {
+        if (path == this.hash || path == this.sort) {
             if (op == 'find') {
                 this.addKey(op, field, value)
-
             } else if (op == 'scan') {
                 if (properties[field.name] !== undefined && field.filter !== false) {
-                    this.addFilter(att, value)
+                    this.addFilter(path, field, value)
                 }
-
-            } else if ((op == 'delete' || op == 'get' || op == 'update') && field.isIndexed) {
+            } else if ((op == 'delete' || op == 'get' || op == 'update' || op == 'check') && field.isIndexed) {
                 this.addKey(op, field, value)
-
             } else if (op == 'put' || (this.params.batch && op == 'update')) {
                 //  Batch does not use update expressions (Ugh!)
-                this.puts[att] = value
+                this.puts[path] = value
             }
-
         } else {
-            if ((op == 'find' || op == 'scan')) {
+            if (op == 'find' || op == 'scan') {
                 //  schema.filter == false disables a field from being used in a filter
                 if (properties[field.name] !== undefined && field.filter !== false) {
                     if (!this.params.batch) {
                         //  Batch does not support filter expressions
-                        this.addFilter(att, value)
+                        this.addFilter(path, field, value)
                     }
                 }
-
             } else if (op == 'put' || (this.params.batch && op == 'update')) {
                 //  Batch does not use update expressions (Ugh!)
-                this.puts[att] = value
-
+                this.puts[path] = value
             } else if (op == 'update') {
-                this.addUpdate(field, value)
+                this.addUpdate(path, field, value)
             }
         }
     }
@@ -198,7 +209,6 @@ export class Expression {
             if (sort) {
                 conditions.push(`attribute_exists(#_${this.addName(sort)})`)
             }
-
         } else if (params.exists === false) {
             conditions.push(`attribute_not_exists(#_${this.addName(hash)})`)
             if (sort) {
@@ -209,9 +219,9 @@ export class Expression {
             conditions.push(`attribute_type(#_${this.addName(sort)}, ${params.type})`)
         }
         if (op == 'update') {
-            this.addUpdates()
+            this.addUpdateConditions()
         }
-        if (params.where && (op == 'delete' || op == 'update')) {
+        if (params.where) {
             conditions.push(this.expand(params.where))
         }
     }
@@ -245,14 +255,14 @@ export class Expression {
                 for (let item of substitutions[name]) {
                     indicies.push(this.addValue(item))
                 }
-                return indicies.map(i => `:_${i}`).join(', ')
+                return indicies.map((i) => `:_${i}`).join(', ')
             }
             index = this.addValue(substitutions[name])
             return `:_${index}`
         })
 
         //  Expand value references and make attribute values. Allow new-lines in values.
-        where = where.replace(/{(.*?)}/sg, (match, value) => {
+        where = where.replace(/{(.*?)}/gs, (match, value) => {
             let index
             if (value.match(/^[-+]?([0-9]+(\.[0-9]*)?|\.[0-9]+)$/)) {
                 index = this.addValue(+value)
@@ -275,18 +285,31 @@ export class Expression {
     }
 
     /*
-        Add filter expressions for find and scan
+        Add where filter expressions for find and scan
      */
-    addFilters() {
+    addWhereFilters() {
         if (this.params.where) {
             this.filters.push(this.expand(this.params.where))
         }
     }
 
+    addFilter(pathname, field, value) {
+        let {filters} = this
+        /*
+        let att = field.attribute[0]
+        let pathname = field.pathname || att
+        */
+        if (pathname == this.hash || pathname == this.sort) {
+            return
+        }
+        let [target, variable] = this.prepareKeyValue(pathname, value)
+        filters.push(`${target} = ${variable}`)
+    }
+
     /*
-        Add filters for non-key attributes for find and scan
+        Add filters when model not known
      */
-    addFilter(att, value) {
+    addGenericFilter(att, value) {
         this.filters.push(`#_${this.addName(att)} = :_${this.addValue(value)}`)
     }
 
@@ -298,16 +321,16 @@ export class Expression {
         if (op == 'find') {
             let keys = this.keys
             if (att == this.sort && typeof value == 'object' && Object.keys(value).length > 0) {
-                let [action,vars] = Object.entries(value)[0]
+                let [action, vars] = Object.entries(value)[0]
                 if (KeyOperators.indexOf(action) < 0) {
                     throw new OneTableArgError(`Invalid KeyCondition operator "${action}"`)
                 }
                 if (action == 'begins_with' || action == 'begins') {
                     keys.push(`begins_with(#_${this.addName(att)}, :_${this.addValue(vars)})`)
-
                 } else if (action == 'between') {
-                    keys.push(`#_${this.addName(att)} BETWEEN :_${this.addValue(vars[0])} AND :_${this.addValue(vars[1])}`)
-
+                    keys.push(
+                        `#_${this.addName(att)} BETWEEN :_${this.addValue(vars[0])} AND :_${this.addValue(vars[1])}`
+                    )
                 } else {
                     keys.push(`#_${this.addName(att)} ${action} :_${this.addValue(value[action])}`)
                 }
@@ -319,10 +342,34 @@ export class Expression {
         }
     }
 
-    addUpdate(field, value) {
+    /*
+        Convert literal attribute names to symbolic ExpressionAttributeName indexes
+     */
+    prepareKey(key) {
+        this.already[key] = true
+        return this.makeTarget(this.model.block.fields, key)
+    }
+
+    /*
+        Convert attribute values to symbolic ExpressionAttributeValue indexes
+     */
+    prepareKeyValue(key, value) {
+        let target = this.prepareKey(key)
+        let requiresExpansion = typeof value == 'string' && value.match(/\${.*?}|@{.*?}|{.*?}/)
+        if (requiresExpansion) {
+            return [target, this.expand(value)]
+        } else {
+            return [target, this.addValueExp(value)]
+        }
+    }
+
+    addUpdate(pathname, field, value) {
         let {params, updates} = this
+        /*
         let att = field.attribute[0]
-        if (att == this.hash || att == this.sort) {
+        let pathname = field.pathname || att
+        */
+        if (pathname == this.hash || pathname == this.sort) {
             return
         }
         if (field.name == this.model.typeField) {
@@ -334,63 +381,60 @@ export class Expression {
         if (params.remove && params.remove.indexOf(field.name) >= 0) {
             return
         }
-        updates.set.push(`#_${this.addName(att)} = :_${this.addValue(value)}`)
+        let target = this.prepareKey(pathname)
+        let variable = this.addValueExp(value)
+        updates.set.push(`${target} = ${variable}`)
     }
 
-    addUpdates() {
+    addUpdateConditions() {
         let {params, updates} = this
         let fields = this.model.block.fields
 
+        const assertIsNotPartition = (key, op) => {
+            if (key == this.hash || key == this.sort) {
+                throw new OneTableArgError(`Cannot ${op} hash or sort`)
+            }
+        }
+
         if (params.add) {
-            //  keys are property names not attributes
             for (let [key, value] of Object.entries(params.add)) {
-                if (key == this.hash || key == this.sort) {
-                    throw new OneTableArgError('Cannot add to hash or sort')
-                }
-                this.already[key] = true
-                let target = this.makeTarget(fields, key)
-                updates.add.push(`${target} :_${this.addValue(value)}`)
+                assertIsNotPartition(key, 'add')
+                const [target, variable] = this.prepareKeyValue(key, value)
+                updates.add.push(`${target} ${variable}`)
             }
         }
         if (params.delete) {
             for (let [key, value] of Object.entries(params.delete)) {
-                if (key == this.hash || key == this.sort) {
-                    throw new OneTableArgError('Cannot delete hash or sort')
-                }
-                this.already[key] = true
-                let target = this.makeTarget(fields, key)
-                updates.delete.push(`${target} :_${this.addValue(value)}`)
+                assertIsNotPartition(key, 'delete')
+                const [target, variable] = this.prepareKeyValue(key, value)
+                updates.delete.push(`${target} ${variable}`)
             }
         }
         if (params.remove) {
-            if (!Array.isArray(params.remove)) {
-                params.remove = [params.remove]
-            }
-            let fields = this.model.block.fields
+            params.remove = [].concat(params.remove) // enforce array
             for (let key of params.remove) {
-                if (key == this.hash || key == this.sort) {
-                    throw new OneTableArgError('Cannot remove hash or sort')
-                }
+                assertIsNotPartition(key, 'remove')
                 if (fields.required) {
                     throw new OneTableArgError('Cannot remove required field')
                 }
-                this.already[key] = true
-                let target = this.makeTarget(fields, key)
+                const target = this.prepareKey(key)
                 updates.remove.push(`${target}`)
             }
         }
         if (params.set) {
             for (let [key, value] of Object.entries(params.set)) {
-                if (key == this.hash || key == this.sort) {
-                    throw new OneTableArgError('Cannot set hash or sort')
-                }
-                this.already[key] = true
-                let target = this.makeTarget(fields, key)
-                if (typeof value == 'string' && value.match(/\${.*?}|@{.*?}|{.*?}/)) {
-                    updates.set.push(`${target} = ${this.expand(value)}`)
-                } else {
-                    updates.set.push(`${target} = :_${this.addValue(value)}`)
-                }
+                assertIsNotPartition(key, 'set')
+                const [target, variable] = this.prepareKeyValue(key, value)
+                updates.set.push(`${target} = ${variable}`)
+            }
+        }
+        if (params.push) {
+            for (let [key, value] of Object.entries(params.push)) {
+                assertIsNotPartition(key, 'push')
+                let empty = this.addValueExp([])
+                let items = this.addValueExp([].concat(value)) // enforce array on values
+                const target = this.prepareKey(key)
+                updates.set.push(`${target} = list_append(if_not_exists(${target}, ${empty}), ${items})`)
             }
         }
     }
@@ -467,16 +511,15 @@ export class Expression {
             if (filters.length) {
                 throw new OneTableArgError('Invalid filters with batch operation')
             }
-
         } else {
             args = {
                 ConditionExpression: conditions.length ? this.and(conditions) : undefined,
                 ExpressionAttributeNames: namesLen > 0 ? names : undefined,
-                ExpressionAttributeValues: (namesLen > 0 && valuesLen > 0) ? values : undefined,
+                ExpressionAttributeValues: namesLen > 0 && valuesLen > 0 ? values : undefined,
                 FilterExpression: filters.length ? this.and(filters) : undefined,
                 KeyConditionExpression: keys.length ? keys.join(' and ') : undefined,
                 ProjectionExpression: project.length ? project.join(', ') : undefined,
-                TableName: this.tableName
+                TableName: this.tableName,
             }
             if (params.select) {
                 //  Select: ALL_ATTRIBUTES | ALL_PROJECTED_ATTRIBUTES | SPECIFIC_ATTRIBUTES | COUNT
@@ -484,7 +527,6 @@ export class Expression {
                     throw new OneTableArgError('Select must be SPECIFIC_ATTRIBUTES with projection expressions')
                 }
                 args.Select = params.select
-
             } else if (params.count) {
                 if (project.length) {
                     throw new OneTableArgError('Cannot use select and count together')
@@ -492,14 +534,14 @@ export class Expression {
                 args.Select = 'COUNT'
             }
             if (params.stats || this.table.metrics) {
-                args.ReturnConsumedCapacity = params.capacity || 'TOTAL'    // INDEXES | TOTAL | NONE
-                args.ReturnItemCollectionMetrics = 'SIZE'                   // SIZE | NONE
+                args.ReturnConsumedCapacity = params.capacity || 'TOTAL' // INDEXES | TOTAL | NONE
+                args.ReturnItemCollectionMetrics = 'SIZE' // SIZE | NONE
             }
             let returnValues
             if (params.return !== undefined) {
                 if (params.return === true) {
                     returnValues = op === 'delete' ? 'ALL_OLD' : 'ALL_NEW'
-                } else if (params.return === false) {
+                } else if (params.return === false || params.return == 'none') {
                     returnValues = 'NONE'
                 } else if (params.return != 'get') {
                     returnValues = params.return
@@ -508,7 +550,6 @@ export class Expression {
             if (op == 'put') {
                 args.Item = puts
                 args.ReturnValues = returnValues || 'NONE'
-
             } else if (op == 'update') {
                 args.ReturnValues = returnValues || 'ALL_NEW'
                 let updates = []
@@ -522,24 +563,35 @@ export class Expression {
                 args.ReturnValues = returnValues || 'ALL_OLD'
             }
 
-            if (op == 'delete' || op == 'get' || op == 'update') {
+            if (op == 'delete' || op == 'get' || op == 'update' || op == 'check') {
                 args.Key = key
             }
             if (op == 'find' || op == 'get' || op == 'scan') {
-                args.ConsistentRead = params.consistent ? true : false,
+                args.ConsistentRead = params.consistent ? true : false
                 args.IndexName = params.index ? params.index : null
             }
             if (op == 'find' || op == 'scan') {
                 args.Limit = params.limit ? params.limit : undefined
                 /*
                     Scan reverse if either reverse or prev is true but not both. (XOR)
-                    If both are true, then requesting the previous page of a reverse scan which is
-                    actually forwards.
+                    If both are true, then requesting the previous page of a reverse scan which is actually forwards.
                 */
-                args.ScanIndexForward = (params.reverse == true ^ params.prev != null) ? false : true
+                args.ScanIndexForward =
+                    (params.reverse == true) ^ (params.prev != null && params.next == null) ? false : true
 
-                if (params.next || params.prev) {
-                    args.ExclusiveStartKey = this.table.marshall(params.next || params.start || params.prev, params)
+                /*
+                    Cherry pick the required properties from the next/prev param
+                 */
+                let cursor = params.next || params.prev
+                if (cursor) {
+                    let {hash, sort} = this.index
+                    let start = {[hash]: cursor[hash], [sort]: cursor[sort]}
+                    if (this.params.index != 'primary') {
+                        let {hash, sort} = this.model.indexes.primary
+                        start[hash] = cursor[hash]
+                        start[sort] = cursor[sort]
+                    }
+                    args.ExclusiveStartKey = this.table.marshall(start, params)
                 }
             }
             if (op == 'scan') {
@@ -569,7 +621,7 @@ export class Expression {
         if (terms.length == 1) {
             return terms.join('')
         }
-        return terms.map(t => `(${t})`).join(' and ')
+        return terms.map((t) => `(${t})`).join(' and ')
     }
 
     /*
@@ -602,5 +654,9 @@ export class Expression {
             }
         }
         return index
+    }
+
+    addValueExp(value) {
+        return `:_${this.addValue(value)}`
     }
 }

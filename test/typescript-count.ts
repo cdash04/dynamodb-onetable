@@ -9,11 +9,12 @@ import {TenantSchema} from './schemas'
 const table = new Table({
     name: 'TypescriptCountTestTable',
     client: Client,
+    partial: false,
     schema: TenantSchema,
 })
 const accountId = table.uuid()
 
-test('Create Table', async() => {
+test('Create Table', async () => {
     if (!(await table.exists())) {
         await table.createTable()
         expect(await table.exists()).toBe(true)
@@ -21,20 +22,20 @@ test('Create Table', async() => {
 })
 
 type UserType = Entity<typeof TenantSchema.models.User>
-let User = table.getModel<UserType>('User')
-let user: UserType = null
+let User = table.getModel('User')
+let user: UserType
 
 type AccountType = Entity<typeof TenantSchema.models.Account>
-let Account = table.getModel<AccountType>('Account')
-let account: AccountType = null
+let Account = table.getModel('Account')
+let account: AccountType
 
 let userData = [
-    {accountId: null, name: 'Peter Smith', email: 'peter@example.com' },
-    {accountId: null, name: 'Patty O\'Furniture', email: 'patty@example.com' },
-    {accountId: null, name: 'Cu Later', email: 'cu@example.com' },
+    {accountId: '', name: 'Peter Smith', email: 'peter@example.com'},
+    {accountId: '', name: "Patty O'Furniture", email: 'patty@example.com'},
+    {accountId: '', name: 'Cu Later', email: 'cu@example.com'},
 ]
 
-test('Create Account and Users', async() => {
+test('Create Account and Users', async () => {
     account = await Account.create({name: 'Acme Rockets'})
     expect(account).toMatchObject({name: 'Acme Rockets'})
 
@@ -49,7 +50,7 @@ test('Create Account and Users', async() => {
     expect(users.length).toBe(userData.length)
 })
 
-test('FindCount', async() => {
+test('FindCount', async () => {
     let count = true
     let num = (await table.find('User', {}, {count})).count
     expect(num).toBe(userData.length)
@@ -68,7 +69,7 @@ test('FindCount', async() => {
     expect(num).toBe(userData.length + 1)
 })
 
-test('Destroy Table', async() => {
+test('Destroy Table', async () => {
     await table.deleteTable('DeleteTableForever')
     expect(await table.exists()).toBe(false)
 })

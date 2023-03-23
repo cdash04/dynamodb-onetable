@@ -12,6 +12,7 @@ const PerPage = 50
 const table = new Table({
     name: 'PaginationTestTable',
     client: Client,
+    partial: false,
     schema: PagedSchema,
 })
 
@@ -20,14 +21,14 @@ type UserEntity = Entity<typeof PagedSchema.models.User>
 let user: UserEntity
 let users: UserEntity[]
 
-test('Create Table', async() => {
+test('Create Table', async () => {
     if (!(await table.exists())) {
         await table.createTable()
         expect(await table.exists()).toBe(true)
     }
 })
 
-let User = table.getModel<UserEntity>('User')
+let User = table.getModel('User')
 
 function zpad(n: number, size: number): string {
     let s = n + ''
@@ -35,7 +36,7 @@ function zpad(n: number, size: number): string {
     return s
 }
 
-test('Create Users', async() => {
+test('Create Users', async () => {
     for (let i = 0; i < MaxUsers; i++) {
         await User.create({name: `user-${zpad(i, 6)}`, email: `email-${zpad(i, 6)}@example.com`})
     }
@@ -43,8 +44,10 @@ test('Create Users', async() => {
     expect(users.length).toBe(MaxUsers)
 })
 
-test('Find with next offset', async() => {
-    let pages = 0, total = 0, next
+test('Find with next offset', async () => {
+    let pages = 0,
+        total = 0,
+        next
     let items: any
     do {
         items = await User.find({}, {limit: PerPage, next})
@@ -61,8 +64,10 @@ test('Find with next offset', async() => {
     expect(pages).toBe(MaxUsers / PerPage)
 })
 
-test('Reverse scan', async() => {
-    let pages = 0, total = 0, next
+test('Reverse scan', async () => {
+    let pages = 0,
+        total = 0,
+        next
     let items: any
     do {
         items = await User.find({}, {limit: PerPage, next, reverse: true})
@@ -79,8 +84,10 @@ test('Reverse scan', async() => {
     expect(pages).toBe(MaxUsers / PerPage)
 })
 
-test('Reverse scan via GSI', async() => {
-    let pages = 0, total = 0, next
+test('Reverse scan via GSI', async () => {
+    let pages = 0,
+        total = 0,
+        next
     let items: any
     do {
         items = await User.find({}, {limit: PerPage, next, reverse: true, index: 'gs1'})
@@ -97,8 +104,10 @@ test('Reverse scan via GSI', async() => {
     expect(pages).toBe(MaxUsers / PerPage)
 })
 
-test('Page backwards', async() => {
-    let pages = 0, total = 0, next
+test('Page backwards', async () => {
+    let pages = 0,
+        total = 0,
+        next
     let limit = PerPage
 
     let firstPage = await User.find({}, {limit})
@@ -116,7 +125,7 @@ test('Page backwards', async() => {
     expect(prevPage[0].name).toBe(secondPage[0].name)
 })
 
-test('Destroy Table', async() => {
+test('Destroy Table', async () => {
     await table.deleteTable('DeleteTableForever')
     expect(await table.exists()).toBe(false)
 })
